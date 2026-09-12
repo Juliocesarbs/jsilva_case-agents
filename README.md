@@ -117,7 +117,7 @@ Executando o pipeline completo:
 | Router Accuracy      |  **100%** |
 | Tool no Top-2        |   **70%** |
 | Economia de custo    | **77,8%** |
-| Economia de latência | **95,1%** |
+| Economia de latência | **~95%** |
 
 O relatório completo é gerado em:
 
@@ -135,7 +135,7 @@ Como a avaliação verifica se a tool esperada apareceu ou não no Top-K, ao ana
 
 Mantive a forma de medição solicitada no case.
 
-Por isso os 95,1% representam o resultado dentro desse benchmark. Em produção eu faria também uma medição end-to-end, considerando todo o tempo do fluxo.
+PPor isso a economia de aproximadamente 95% representa o resultado dentro desse benchmark. Como os mocks simulam latência variável, o valor pode apresentar pequenas variações entre execuções.
 
 ## Como executar
 
