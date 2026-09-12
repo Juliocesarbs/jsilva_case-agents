@@ -32,29 +32,25 @@ def compute_router_metrics(
     y_pred: List[str],
     labels: List[str],
 ) -> Dict:
-    """Calcula acurácia e matriz de confusão do router."""
+    """Calcula a acurácia e a matriz de confusão do router."""
     total = len(y_true)
 
     accuracy = (
-        sum(
-            true == pred
-            for true, pred in zip(y_true, y_pred)
-        )
-        / total
+        sum(true == pred for true, pred in zip(y_true, y_pred)) / total
         if total
         else 0.0
     )
 
     confusion_matrix = {
         true_label: {
-            pred_label: 0
+            pred_label: sum(
+                true == true_label and pred == pred_label
+                for true, pred in zip(y_true, y_pred)
+            )
             for pred_label in labels
         }
         for true_label in labels
     }
-
-    for true, pred in zip(y_true, y_pred):
-        confusion_matrix[true][pred] += 1
 
     return {
         "accuracy": accuracy,
@@ -63,7 +59,7 @@ def compute_router_metrics(
 
 
 def compute_precision_at_k(hits: List[int]) -> float:
-    """Calcula a taxa de queries em que a tool correta apareceu no Top-K."""
+    """Calcula a taxa de queries em que a tool esperada apareceu no Top-K."""
     if not hits:
         return 0.0
 
@@ -76,8 +72,7 @@ def compute_savings(
     baseline_cost_usd: float,
     baseline_latency_ms: float,
 ) -> Dict:
-    """Calcula economia percentual de custo e latência em relação ao baseline."""
-
+    """Calcula a economia percentual de custo e latência."""
     cost_savings_pct = (
         (1 - smart_cost_usd / baseline_cost_usd) * 100
         if baseline_cost_usd
@@ -108,7 +103,6 @@ def run_harness(
     y_true: List[str] = []
     y_pred: List[str] = []
     precision_hits: List[int] = []
-
     smart_cost_total = 0.0
     smart_latency_ms_total = 0.0
     baseline_cost_total = 0.0
@@ -122,10 +116,8 @@ def run_harness(
         expected_tool = item.get("expected_tool")
 
         route_result = router.predict(query)
-
         y_true.append(expected_route)
         y_pred.append(route_result.route)
-
         smart_cost = COST_ROUTER_USD
         smart_latency_ms = route_result.latency_ms
 
@@ -137,58 +129,32 @@ def run_harness(
 
         if route_result.route == "FAST_PATH":
             fast_path_answer(query)
-
         else:
-            retrieval_result = retriever.search(
-                query,
-                k=k,
-            )
-
+            retrieval_result = retriever.search(query, k=k)
             smart_cost += COST_RETRIEVAL_USD
             smart_latency_ms += retrieval_result.latency_ms
-
-            top_k_names = [
-                match.name
-                for match in retrieval_result.matches
-            ]
+            top_k_names = [m.name for m in retrieval_result.matches]
 
             if expected_tool:
-                precision_hits.append(
-                    int(expected_tool in top_k_names)
-                )
+                precision_hits.append(int(expected_tool in top_k_names))
 
             row["retrieved_tools"] = top_k_names
             row["expected_tool"] = expected_tool
 
             if top_k_names:
-                mock_tool_execution(
-                    top_k_names[0],
-                    query,
-                )
-
-                llm_result = simulate_agent_llm_call(
-                    query,
-                    top_k_names[0],
-                )
-
+                mock_tool_execution(top_k_names[0], query)
+                llm_result = simulate_agent_llm_call(query, top_k_names[0])
                 smart_cost += llm_result["cost_usd"]
 
         smart_cost_total += smart_cost
         smart_latency_ms_total += smart_latency_ms
 
         baseline_start = time.perf_counter()
-
-        baseline_result = simulate_baseline_llm_call(
-            query
-        )
-
+        baseline_result = simulate_baseline_llm_call(query)
         baseline_latency_ms_total += (
             time.perf_counter() - baseline_start
         ) * 1000
-
-        baseline_cost_total += baseline_result[
-            "cost_usd"
-        ]
+        baseline_cost_total += baseline_result["cost_usd"]
 
         rows.append(row)
 
@@ -214,9 +180,7 @@ def run_harness(
     report = {
         "n_queries": len(eval_dataset),
         "router_accuracy": router_metrics["accuracy"],
-        "confusion_matrix": router_metrics[
-            "confusion_matrix"
-        ],
+        "confusion_matrix": router_metrics["confusion_matrix"],
         "precision_at_k": precision_at_k,
         "k": k,
         "smart_pipeline": {
@@ -236,64 +200,41 @@ def run_harness(
 
 def print_report(report: dict) -> None:
     print("=" * 60)
-    print(
-        "HARNESS DE AVALIAÇÃO - "
-        "Router & Tool Retrieval"
-    )
+    print("HARNESS DE AVALIAÇÃO - Router & Tool Retrieval")
     print("=" * 60)
-
-    print(
-        f"Queries avaliadas: "
-        f"{report['n_queries']}"
-    )
-
-    print(
-        f"Acurácia do Router: "
-        f"{report['router_accuracy']:.1%}"
-    )
-
-    print(
-        f"Matriz de confusão: "
-        f"{report['confusion_matrix']}"
-    )
+    print(f"Queries avaliadas: {report['n_queries']}")
+    print(f"Acurácia do Router: {report['router_accuracy']:.1%}")
+    print(f"Matriz de confusão: {report['confusion_matrix']}")
 
     if report["precision_at_k"] is not None:
         print(
-            f"Precision@{report['k']} "
-            f"do Retriever: "
+            f"Precision@{report['k']} do Retriever: "
             f"{report['precision_at_k']:.1%}"
         )
 
     print("-" * 60)
-
     print(
         f"Custo pipeline inteligente: "
         f"${report['smart_pipeline']['total_cost_usd']:.5f}"
     )
-
     print(
         f"Custo baseline (tudo pro LLM): "
         f"${report['baseline_always_llm']['total_cost_usd']:.5f}"
     )
-
     print(
         f"Economia de custo: "
         f"{report.get('cost_savings_pct', 0):.1f}%"
     )
-
     print(
         f"Latência pipeline inteligente: "
         f"{report['smart_pipeline']['total_latency_ms']:.1f} ms"
     )
-
     print(
         f"Latência baseline: "
         f"{report['baseline_always_llm']['total_latency_ms']:.1f} ms"
     )
-
     print(
         f"Economia de latência: "
         f"{report.get('latency_savings_pct', 0):.1f}%"
     )
-
     print("=" * 60)

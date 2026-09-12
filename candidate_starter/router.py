@@ -25,17 +25,18 @@ class QueryRouter(BaseRouter):
     def fit(self, texts: List[str], labels: List[str]) -> "QueryRouter":
         """Treina o router com os exemplos de `data/router_training_data.json`."""
         class_counts = Counter(labels)
+
+        if len(class_counts) < 2:
+            raise ValueError("O router precisa de pelo menos duas classes.")
+
         min_class_size = min(class_counts.values())
 
-        # O dataset completo permite cv=3. O ajuste para cv=2 mantém
-        # compatibilidade com conjuntos pequenos, como os testes de sanidade.
-        calibration_cv = min(3, min_class_size)
+        if min_class_size < 2:
+            raise ValueError(
+                "Cada classe precisa de pelo menos dois exemplos para calibração."
+            )
 
-        classifier = CalibratedClassifierCV(
-            estimator=LinearSVC(),
-            method="sigmoid",
-            cv=calibration_cv,
-        )
+        calibration_cv = min(3, min_class_size)
 
         self._model = Pipeline(
             [
@@ -48,33 +49,34 @@ class QueryRouter(BaseRouter):
                         sublinear_tf=True,
                     ),
                 ),
-                ("classifier", classifier),
+                (
+                    "classifier",
+                    CalibratedClassifierCV(
+                        estimator=LinearSVC(),
+                        method="sigmoid",
+                        cv=calibration_cv,
+                    ),
+                ),
             ]
         )
 
         self._model.fit(texts, labels)
         self._fitted = True
-
         return self
 
     def predict(self, query: str) -> RouteResult:
-        """Classifica `query` e retorna rota, latência e confiança."""
+        """Classifica a query e retorna rota, latência e confiança."""
         if not self._fitted:
             raise RuntimeError("Chame fit() antes de predict().")
 
         start = time.perf_counter()
 
         probabilities = self._model.predict_proba([query])[0]
-        classes = self._model.classes_
-
         best_index = probabilities.argmax()
 
-        route = classes[best_index]
+        route = self._model.classes_[best_index]
         confidence = float(probabilities[best_index])
-
-        latency_ms = (
-            time.perf_counter() - start
-        ) * 1000
+        latency_ms = (time.perf_counter() - start) * 1000
 
         return RouteResult(
             route=route,

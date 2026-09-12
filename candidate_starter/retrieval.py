@@ -1,11 +1,8 @@
 """Pilar 2 — Seleção de Tools Relevantes.
 
-O catálogo de tools está em `data/tools_registry.json`. Passar todas as tools no prompt
-de um LLM não escala (estoura contexto, confunde o modelo, aumenta custo e latência).
-
-`search(query, k=2)` deve retornar as `k` tools mais relevantes do catálogo para a query,
-antes de qualquer chamada ao LLM. A estratégia de seleção/ranking é livre — escolha o que
-fizer sentido e esteja preparado para justificar os trade-offs.
+Seleciona as tools mais relevantes para a query antes de qualquer chamada ao LLM.
+A estratégia usa TF-IDF sobre o nome das tools, seguido de um reranking simples
+para reduzir a preferência por tools excessivamente específicas.
 """
 
 import time
@@ -54,37 +51,31 @@ class ToolRetriever(BaseToolRetriever):
             dtype=float,
         )
 
-        self._tool_matrix = self._vectorizer.fit_transform(
-            tool_texts
-        )
-
+        self._tool_matrix = self._vectorizer.fit_transform(tool_texts)
         self._fitted = True
+
         return self
 
     def search(self, query: str, k: int = 2) -> RetrievalResult:
-        """Retorna as top-k tools mais relevantes para `query`."""
+        """Retorna as top-k tools mais relevantes para a query."""
         if not self._fitted:
             raise RuntimeError("Chame fit() antes de search().")
 
         start = time.perf_counter()
 
         query_vector = self._vectorizer.transform([query])
-
         similarities = cosine_similarity(
             query_vector,
             self._tool_matrix,
         )[0]
 
         candidate_size = min(
-            self._candidate_size,
+            max(self._candidate_size, k),
             len(self._tools),
         )
 
         lexical_ranking = np.argsort(similarities)[::-1]
-
-        candidate_indexes = lexical_ranking[
-            :candidate_size
-        ]
+        candidate_indexes = lexical_ranking[:candidate_size]
 
         candidate_scores = (
             similarities[candidate_indexes]
@@ -94,27 +85,18 @@ class ToolRetriever(BaseToolRetriever):
             )
         )
 
-        reranked_positions = np.argsort(
-            candidate_scores
-        )[::-1]
-
+        reranked_positions = np.argsort(candidate_scores)[::-1]
         top_positions = reranked_positions[:k]
 
         matches = [
             ToolMatch(
-                name=self._tools[
-                    candidate_indexes[position]
-                ].name,
-                score=float(
-                    candidate_scores[position]
-                ),
+                name=self._tools[candidate_indexes[position]].name,
+                score=float(candidate_scores[position]),
             )
             for position in top_positions
         ]
 
-        latency_ms = (
-            time.perf_counter() - start
-        ) * 1000
+        latency_ms = (time.perf_counter() - start) * 1000
 
         return RetrievalResult(
             matches=matches,
