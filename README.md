@@ -1,59 +1,192 @@
 # Case Técnico — Router de Queries & Seleção de Tools
 
-## Contexto
+A ideia do case é criar um fluxo capaz de decidir quando uma mensagem pode ser resolvida de forma simples e quando precisa seguir para uma etapa mais completa, envolvendo seleção de tools e LLM.
 
-Você está construindo o "cérebro de roteamento" de um agente de atendimento (banco digital
-fictício). Antes de qualquer chamada a um LLM caro, o sistema precisa decidir **o caminho mais
-barato e rápido possível** para responder cada mensagem do usuário.
+Minha abordagem foi começar simples e ir aumentando a complexidade somente quando os resultados mostravam necessidade.
 
-Este case tem requisitos claros, mas **a técnica/abordagem é escolha sua** — não há uma única
-solução "certa" esperada. Justifique as decisões que tomar.
+No final, o fluxo ficou assim:
 
-```mermaid
-flowchart TD
-    A[Query do Usuário] --> B[1. Router / Classificador]
-    B -->|Query simples / FAQ| C[Modelo leve / Resposta local]
-    B -->|Query complexa| D[2. Seleção de Tools Relevantes]
-    D --> E[Agente executa a tool encontrada]
-    C --> F[3. Evaluation Harness<br/>Latência vs Custo vs Acurácia]
-    E --> F
+```text
+Query
+  |
+  v
+Router
+  |
+  +---- FAST_PATH ---> resposta simples
+  |
+  +---- AGENT -------> busca das tools
+                            |
+                            v
+                         Top-2
+                            |
+                            v
+                         Agent / LLM
 ```
 
-## O que você precisa implementar
+## Router
 
-### Pilar 1 — Router (`router.py`)
-Um componente que decide, para cada `query`, se ela deve ir para:
-- `FAST_PATH`: saudações, FAQ, perguntas genéricas → resposta local (`common/mock_llm.py`).
-- `AGENT`: precisa de uma tool específica → vai para o Pilar 2.
+Para o Router testei alguns modelos de classificação, entre eles Logistic Regression, Random Forest e Linear SVM.
 
-Implemente `fit(texts, labels)` e `predict(query) -> RouteResult` (contrato em
-`common/interfaces.py`). A técnica é livre. Treine com `data/router_training_data.json`.
+O **Linear SVM com TF-IDF** apresentou o melhor resultado nos testes e foi a abordagem escolhida.
 
-### Pilar 2 — Seleção de Tools Relevantes (`retrieval.py`)
-O catálogo de tools está em `data/tools_registry.json`. Passar todas as tools no prompt de
-um LLM não escala (estoura o contexto, confunde o modelo, aumenta custo e latência).
+Também testei diferentes formas de representar os textos. Combinar mais features não trouxe ganho relevante, então mantive a solução mais simples.
 
-**Requisito:** `search(query, k=2)` deve retornar as `k` tools mais relevantes do catálogo
-para a query, antes de qualquer chamada ao LLM. A estratégia de seleção/ranking é livre —
-só precisa ser justificável.
+No dataset de avaliação do case o resultado final foi:
 
-### Pilar 3 — Evaluation Harness (`harness.py`)
-A orquestração do pipeline já está pronta. Falta implementar as métricas:
-- Acurácia do Router + matriz de confusão.
-- Precision@K do retriever (a tool certa estava no top-k?).
-- % de economia de custo e de latência do pipeline "inteligente" vs. baseline (mandar tudo
-  direto para o LLM caro, com todas as tools no prompt).
+```text
+Accuracy: 100%
 
-## Como rodar
+FAST_PATH: 10/10
+AGENT:     20/20
+```
+
+A saída também possui um nível de confiança. Uma evolução que eu testaria em produção seria utilizar essa confiança para criar um fallback: decisões mais claras continuam locais e casos de baixa confiança podem ser enviados para um modelo pequeno.
+
+## Seleção das tools
+
+Essa foi a parte que mais exigiu experimentação.
+
+O catálogo possui **285 tools**, muitas com nomes e funções bastante parecidos.
+
+Minha primeira abordagem utilizava nome, descrição e categoria da tool. O resultado inicial foi:
+
+```text
+Top-2: 15%
+```
+
+Analisando os erros, percebi duas coisas importantes.
+
+A primeira foi que usar mais informações nem sempre ajudava. Utilizando apenas o nome das tools, o Top-2 subiu para:
+
+```text
+Top-2: 40%
+```
+
+A segunda foi que muitas buscas retornavam uma tool muito específica, enquanto o resultado esperado pelo dataset era uma tool mais geral.
+
+Por exemplo, uma query sobre saldo poderia encontrar uma função muito específica de saldo disponível, enquanto o resultado esperado era simplesmente:
+
+```text
+consultar_saldo
+```
+
+A partir dessa análise adicionei uma etapa simples de reranking, dando preferência para tools menos específicas entre os candidatos encontrados.
+
+O fluxo final ficou:
+
+```text
+Query
+  |
+  v
+TF-IDF
+  |
+  v
+Top-10 candidatos
+  |
+  v
+Reranking
+  |
+  v
+Top-2 tools
+```
+
+Com isso o resultado chegou a:
+
+```text
+Top-2: 70%
+```
+
+## O que também testei
+
+Durante o desenvolvimento experimentei outras abordagens.
+
+Testei busca por caracteres, combinação de rankings e também embeddings com `all-MiniLM-L6-v2`.
+
+Os embeddings conseguiram colocar várias tools esperadas dentro do Top-10, mas tiveram desempenho ruim nas primeiras posições.
+
+Como também adicionavam uma nova dependência e mais processamento, preferi não utilizá-los na solução final.
+
+A ideia aqui foi não adicionar complexidade apenas porque a tecnologia é mais sofisticada.
+
+## Resultado final
+
+Executando o pipeline completo:
+
+| Métrica              | Resultado |
+| -------------------- | --------: |
+| Router Accuracy      |  **100%** |
+| Tool no Top-2        |   **70%** |
+| Economia de custo    | **77,8%** |
+| Economia de latência | **95,1%** |
+
+O relatório completo é gerado em:
+
+```text
+reports/candidate_report.json
+```
+
+### Sobre o Precision@2
+
+O case chama a métrica de `Precision@K`, então mantive esse nome na implementação.
+
+Como a avaliação verifica se a tool esperada apareceu ou não no Top-K, ao analisar meus experimentos tratei essa métrica como **Hit@K**.
+
+### Sobre a latência
+
+Mantive a forma de medição solicitada no case.
+
+Por isso os 95,1% representam o resultado dentro desse benchmark. Em produção eu faria também uma medição end-to-end, considerando todo o tempo do fluxo.
+
+## Como executar
+
+Instale as dependências:
 
 ```bash
 pip install -r requirements.txt
-python -m candidate_starter.run_case
+```
+
+Execute os testes:
+
+```bash
 pytest candidate_starter/tests -v
 ```
 
-## Entregáveis
+Execute o case:
 
-1. `router.py`, `retrieval.py`, `harness.py` implementados (os testes em `tests/` devem passar).
-2. O relatório impresso/gerado por `run_case.py` (salvo em `reports/candidate_report.json`).
-3. Um breve comentário (README ou PR) explicando as escolhas técnicas e trade-offs.
+```bash
+python -m candidate_starter.run_case
+```
+
+## Estrutura do projeto
+
+```text
+candidate_starter/
+├── router.py
+├── retrieval.py
+├── harness.py
+├── run_case.py
+└── tests/
+
+experiments/
+├── router/
+└── retrieval/
+
+reports/
+└── candidate_report.json
+```
+
+`candidate_starter` contém a solução utilizada no resultado final.
+
+Em `experiments` mantive os testes e abordagens que fui avaliando durante o desenvolvimento. Preferi deixar essa parte separada para que fosse possível acompanhar o caminho até a solução sem carregar código experimental para a implementação principal.
+
+## Próximos passos
+
+Se esse fluxo fosse evoluir para produção, eu seguiria uma abordagem em camadas.
+
+Queries simples continuariam sendo resolvidas localmente. Casos de baixa confiança poderiam passar por um modelo menor, deixando um modelo maior apenas para situações que realmente precisassem de mais raciocínio.
+
+No retrieval, seguiria uma ideia parecida: busca local para gerar poucos candidatos e um modelo menor apenas para ajudar no reranking quando necessário.
+
+A principal ideia que ficou do desenvolvimento foi:
+
+> **não usar mais complexidade do que o problema precisa.**
