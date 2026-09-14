@@ -25,11 +25,15 @@ Router
 
 ## Router
 
-Para o Router testei alguns modelos de classificação, entre eles Logistic Regression, Random Forest e Linear SVM.
+PPara o roteamento entre FAST_PATH e AGENT, comparei Logistic Regression, Random Forest e Linear SVM utilizando TF-IDF.
 
-O **Linear SVM com TF-IDF** apresentou o melhor resultado nos testes e foi a abordagem escolhida.
+Na validação cruzada com 5 folds, o Linear SVM apresentou o melhor resultado médio (~89%), contra aproximadamente 84% do Random Forest e 81% da Logistic Regression.
 
-Também testei diferentes formas de representar os textos. Combinar mais features não trouxe ganho relevante, então mantive a solução mais simples.
+Também comparei representações word, char e word + char. Como word e word + char apresentaram desempenho semelhante, mantive word TF-IDF pela menor complexidade.
+
+No conjunto de avaliação fornecido pelo case, o modelo final acertou as 30 queries. Como esse conjunto é pequeno, considero os ~89% da validação cruzada uma referência mais adequada para avaliar o comportamento do Router, enquanto os 100% representam apenas o resultado observado no eval fornecido.
+
+Uma evolução para produção seria utilizar confiança e sinais de cobertura da entrada para direcionar casos incertos a um fallback mais robusto.
 
 No dataset de avaliação do case o resultado final foi:
 
@@ -112,11 +116,12 @@ A ideia aqui foi não adicionar complexidade apenas porque a tecnologia é mais 
 
 Executando o pipeline completo:
 
-| Métrica              | Resultado |
-| -------------------- | --------: |
-| Router Accuracy      |  **100%** |
-| Tool no Top-2        |   **70%** |
-| Economia de custo    | **77,8%** |
+| Métrica | Resultado |
+|---|---:|
+| Router — validação cruzada | **~89%** |
+| Router — eval fornecido (30 queries) | **100%** |
+| Tool Retrieval — Top-2 | **70%** |
+| Economia de custo | **77,8%** |
 | Economia de latência | **~95%** |
 
 O relatório completo é gerado em:
